@@ -1,0 +1,211 @@
+services:
+
+  # ============================================================
+  # GridPortfolio API
+  # ============================================================
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: gridportfolio-api
+
+    command: >
+      uvicorn gridportfolio.api.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+
+    ports:
+      - "8000:8000"
+
+    env_file:
+      - .env
+
+    environment:
+      APP_ENV: development
+      DATA_DIR: /app/data
+      RAW_DATA_DIR: /app/data/raw
+      PROCESSED_DATA_DIR: /app/data/processed
+      SCENARIO_DATA_DIR: /app/data/scenarios
+      DUCKDB_PATH: /app/data/gridportfolio.duckdb
+      DATABASE_URL: duckdb:///app/data/gridportfolio.duckdb
+
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+      - ./scripts:/app/scripts
+      - ./tests:/app/tests
+      - ./examples:/app/examples
+      - ./docs:/app/docs
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+    restart: unless-stopped
+
+    networks:
+      - gridportfolio
+
+
+  # ============================================================
+  # GridPortfolio Frontend
+  # ============================================================
+  #
+  # The frontend will eventually provide:
+  #
+  # - Portfolio Health
+  # - Organization Map
+  # - Cross-Team Impact
+  # - Risk Dashboard
+  # - Initiative Management
+  # - Decision Tracking
+  # - AI Agent Interface
+  #
+  # The application can initially run without this service.
+  # ============================================================
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+
+    container_name: gridportfolio-frontend
+
+    ports:
+      - "3000:3000"
+
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+
+    depends_on:
+      api:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    networks:
+      - gridportfolio
+
+
+  # ============================================================
+  # Optional PostgreSQL
+  # ============================================================
+  #
+  # DuckDB is the default local analytical database.
+  #
+  # PostgreSQL is included as an optional production-oriented
+  # service for applications that eventually require:
+  #
+  # - concurrent transactional writes
+  # - persistent application state
+  # - multi-user deployments
+  # - workflow state
+  # - production orchestration
+  #
+  # The MVP does NOT require PostgreSQL.
+  # ============================================================
+
+  postgres:
+    image: postgres:17-alpine
+
+    container_name: gridportfolio-postgres
+
+    profiles:
+      - postgres
+
+    environment:
+      POSTGRES_DB: gridportfolio
+      POSTGRES_USER: gridportfolio
+      POSTGRES_PASSWORD: gridportfolio_dev_password
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U gridportfolio -d gridportfolio"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    restart: unless-stopped
+
+    networks:
+      - gridportfolio
+
+
+  # ============================================================
+  # Optional Development Database UI
+  # ============================================================
+  #
+  # Useful when PostgreSQL is enabled.
+  #
+  # Start with:
+  #
+  # docker compose --profile postgres up
+  #
+  # ============================================================
+
+  adminer:
+    image: adminer:latest
+
+    container_name: gridportfolio-adminer
+
+    profiles:
+      - postgres
+
+    ports:
+      - "8080:8080"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+    networks:
+      - gridportfolio
+
+
+# ============================================================
+# Persistent Volumes
+# ============================================================
+
+volumes:
+
+  postgres_data:
+    name: gridportfolio-postgres-data
+
+
+# ============================================================
+# Network
+# ============================================================
+
+networks:
+
+  gridportfolio:
+    name: gridportfolio-network
+    driver: bridge
