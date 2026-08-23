@@ -17,7 +17,7 @@ from gridportfolio.integration.pipeline import (
 )
 
 from gridportfolio.integration.quality import (
-    QualityResult,
+    DataQualityResult,
     assess_all_sources,
     assess_dataframe_quality,
 )
@@ -25,7 +25,7 @@ from gridportfolio.integration.quality import (
 __all__ = [
     "DataFrameConnector",
     "IntegratedPortfolio",
-    "QualityResult",
+    "DataQualityResult",
     "SourceConnector",
     "SourceRegistry",
     "assess_all_sources",

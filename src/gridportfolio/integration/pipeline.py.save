@@ -1,4 +1,4 @@
-"""
+X"""
 Integration pipeline.
 
 This is the central connective-tissue component.
@@ -35,7 +35,7 @@ class IntegratedPortfolio:
     contracts: pd.DataFrame
     procurement: pd.DataFrame
     initiatives: pd.DataFrame
-    quality: dict[str, DataQualityResult]
+    quality: list[DataQualityResult]
 
 
 def integrate_sources(
@@ -143,10 +143,6 @@ def build_cross_functional_view(
 
     contracts = portfolio.contracts.copy()
 
-    # --------------------------------------------------------
-    # Asset + Forecast
-    # --------------------------------------------------------
-
     view = assets.merge(
         forecasts[
             [
@@ -160,107 +156,44 @@ def build_cross_functional_view(
         how="left",
     )
 
-    # --------------------------------------------------------
-    # Asset -> Market
-    # --------------------------------------------------------
-
     asset_market = {
         "DC-001": "WEST",
         "DC-002": "WEST",
-        "DC-003": "EAST",
-        "DC-004": "EAST",
+        "DC-003": "ERCOT",
+        "DC-004": "SOUTHEAST",
     }
 
     view["market_code"] = view["asset_code"].map(
-        asset_market
+        asset_market,
     )
-
-    # --------------------------------------------------------
-    # Market conditions
-    # --------------------------------------------------------
 
     view = view.merge(
         markets[
             [
                 "market_code",
-                "price_mwh",
-                "volatility",
+                "real_time_price_usd_mwh",
+                "price_volatility",
+                "exposure_mw",
             ]
         ],
         on="market_code",
         how="left",
     )
 
-    # --------------------------------------------------------
-    # Contract information
-    # --------------------------------------------------------
-
-    if "asset_code" in contracts.columns:
-        contract_columns = [
-            column
-            for column in [
+    view = view.merge(
+        contracts[
+            [
+                "contract_code",
                 "asset_code",
-                "contract_id",
-                "contract_status",
+                "contracted_mw",
+                "contract_price_usd_mwh",
                 "expiration_date",
+                "renewable_flag",
+                "contract_status",
             ]
-            if column in contracts.columns
-        ]
-
-        if contract_columns:
-            view = view.merge(
-                contracts[contract_columns],
-                on="asset_code",
-                how="left",
-            )
-
-    # --------------------------------------------------------
-    # Procurement information
-    # --------------------------------------------------------
-
-    procurement = portfolio.procurement.copy()
-
-    if "asset_code" in procurement.columns:
-        procurement_columns = [
-            column
-            for column in [
-                "asset_code",
-                "procurement_status",
-                "procurement_cost",
-            ]
-            if column in procurement.columns
-        ]
-
-        if procurement_columns:
-            view = view.merge(
-                procurement[procurement_columns],
-                on="asset_code",
-                how="left",
-            )
-
-    # --------------------------------------------------------
-    # Initiative information
-    # --------------------------------------------------------
-
-    initiatives = portfolio.initiatives.copy()
-
-    if "asset_code" in initiatives.columns:
-        initiative_columns = [
-            column
-            for column in [
-                "asset_code",
-                "initiative_id",
-                "initiative_status",
-                "priority",
-            ]
-            if column in initiatives.columns
-        ]
-
-        if initiative_columns:
-            view = view.merge(
-                initiatives[initiative_columns],
-                on="asset_code",
-                how="left",
-            )
+        ],
+        on="asset_code",
+        how="left",
+    )
 
     return view

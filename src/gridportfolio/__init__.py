@@ -76,7 +76,6 @@ from gridportfolio.models.sources import (
     DataQualityStatus,
     Dataset,
     IntegrationEvent,
-    IntegrationMapping,
     SourceFormat,
     SourceHealth,
     SourceStatus,

@@ -1,110 +1,261 @@
 """
-Data-quality checks for integrated portfolio data.
+Data-quality assessment for integrated portfolio sources.
 
-Trust is a first-class requirement.
-
-A leadership dashboard should be able to distinguish:
-
-    "portfolio risk increased"
-
-from:
-
-    "portfolio risk appears higher because one source is stale."
+The quality layer intentionally operates independently of any specific
+source system. It provides a common quality vocabulary across datasets
+coming from asset management, analytics, wholesale, origination,
+procurement, finance, and other specialist functions.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 import pandas as pd
 
 
 @dataclass
-class QualityResult:
-    dataset: str
-    score: float
-    status: str
-    checks: list[str]
+class DataQualityResult:
+    """
+    Quality assessment for a single dataset.
+
+    Scores are normalized between 0 and 1.
+    """
+
+    source_name: str
+
+    row_count: int
+
+    column_count: int
+
+    missing_rate: float
+
+    duplicate_rate: float
+
+    quality_score: float
+
+    issues: list[str] = field(default_factory=list)
+
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_healthy(self) -> bool:
+        """Return whether the dataset passes the basic quality threshold."""
+
+        return self.quality_score >= 0.80
+
+
+def _safe_duplicate_rate(
+    dataframe: pd.DataFrame,
+) -> float:
+    """
+    Calculate duplicate-row rate safely.
+
+    Pandas' standard DataFrame.duplicated() requires values to be
+    hashable. Real-world enterprise datasets may contain nested values
+    such as lists, dictionaries, or other Python objects.
+
+    To make quality assessment robust, object values are normalized into
+    deterministic representations before duplicate detection.
+    """
+
+    if dataframe.empty:
+        return 0.0
+
+    normalized = dataframe.copy()
+
+    for column in normalized.columns:
+        if normalized[column].dtype == "object":
+            normalized[column] = normalized[column].map(
+                _normalize_for_hashing
+            )
+
+    try:
+        return float(normalized.duplicated().mean())
+
+    except TypeError:
+        # Final defensive fallback for unusual Python objects.
+        serialized = normalized.astype(str)
+        return float(serialized.duplicated().mean())
+
+
+def _normalize_for_hashing(
+    value: Any,
+) -> Any:
+    """
+    Convert nested Python objects into hashable deterministic values.
+
+    Lists become tuples.
+    Dictionaries become sorted tuples of key/value pairs.
+    Sets become sorted tuples.
+    Nested structures are handled recursively.
+    """
+
+    if isinstance(value, dict):
+        return tuple(
+            sorted(
+                (
+                    str(key),
+                    _normalize_for_hashing(item),
+                )
+                for key, item in value.items()
+            )
+        )
+
+    if isinstance(value, (list, tuple)):
+        return tuple(
+            _normalize_for_hashing(item)
+            for item in value
+        )
+
+    if isinstance(value, set):
+        normalized_items = [
+            _normalize_for_hashing(item)
+            for item in value
+        ]
+
+        return tuple(
+            sorted(
+                normalized_items,
+                key=str,
+            )
+        )
+
+    return value
+
+
+def _calculate_missing_rate(
+    dataframe: pd.DataFrame,
+) -> float:
+    """Calculate the percentage of missing cells."""
+
+    if dataframe.empty or dataframe.shape[1] == 0:
+        return 0.0
+
+    return float(
+        dataframe.isna().mean().mean()
+    )
+
+
+def _build_quality_score(
+    missing_rate: float,
+    duplicate_rate: float,
+) -> float:
+    """
+    Build a simple interpretable quality score.
+
+    Missingness and duplication are currently the two baseline quality
+    dimensions. Additional checks can be incorporated later without
+    changing the public interface.
+    """
+
+    score = (
+        1.0
+        - (missing_rate * 0.60)
+        - (duplicate_rate * 0.40)
+    )
+
+    return max(
+        0.0,
+        min(1.0, score),
+    )
 
 
 def assess_dataframe_quality(
     name: str,
     dataframe: pd.DataFrame,
-) -> QualityResult:
-    """Run basic quality checks."""
+) -> DataQualityResult:
+    """
+    Assess the quality of a single DataFrame.
 
-    checks: list[str] = []
+    Parameters
+    ----------
+    name:
+        Logical source or dataset name.
 
-    if dataframe.empty:
-        return QualityResult(
-            dataset=name,
-            score=0.0,
-            status="fail",
-            checks=["Dataset is empty."],
-        )
+    dataframe:
+        Source data to assess.
 
-    checks.append("Dataset contains records.")
+    Returns
+    -------
+    DataQualityResult
+        Structured quality assessment.
+    """
 
-    null_fraction = dataframe.isna().mean().mean()
+    row_count = len(dataframe)
 
-    if null_fraction == 0:
-        checks.append("No missing values detected.")
-        missing_score = 1.0
-    else:
-        checks.append(
-            f"Average missing-value fraction: {null_fraction:.2%}."
-        )
-        missing_score = max(
-            0.0,
-            1.0 - null_fraction,
-        )
+    column_count = len(dataframe.columns)
 
-    duplicate_fraction = (
-        dataframe.duplicated().mean()
+    missing_rate = _calculate_missing_rate(
+        dataframe
     )
 
-    if duplicate_fraction == 0:
-        checks.append("No duplicate rows detected.")
-        duplicate_score = 1.0
-    else:
-        checks.append(
-            f"Duplicate-row fraction: {duplicate_fraction:.2%}."
-        )
-        duplicate_score = max(
-            0.0,
-            1.0 - duplicate_fraction,
-        )
-
-    score = (
-        missing_score * 0.6
-        + duplicate_score * 0.4
+    duplicate_rate = _safe_duplicate_rate(
+        dataframe
     )
 
-    status = (
-        "pass"
-        if score >= 0.95
-        else "warning"
-        if score >= 0.80
-        else "fail"
+    quality_score = _build_quality_score(
+        missing_rate=missing_rate,
+        duplicate_rate=duplicate_rate,
     )
 
-    return QualityResult(
-        dataset=name,
-        score=score,
-        status=status,
-        checks=checks,
+    issues: list[str] = []
+
+    if missing_rate > 0.10:
+        issues.append(
+            f"High missingness: {missing_rate:.1%}"
+        )
+
+    if duplicate_rate > 0.05:
+        issues.append(
+            f"High duplicate rate: {duplicate_rate:.1%}"
+        )
+
+    if row_count == 0:
+        issues.append(
+            "Dataset contains no rows."
+        )
+
+    if column_count == 0:
+        issues.append(
+            "Dataset contains no columns."
+        )
+
+    return DataQualityResult(
+        source_name=name,
+        row_count=row_count,
+        column_count=column_count,
+        missing_rate=missing_rate,
+        duplicate_rate=duplicate_rate,
+        quality_score=quality_score,
+        issues=issues,
     )
 
 
 def assess_all_sources(
-    data: dict[str, pd.DataFrame],
-) -> list[QualityResult]:
-    """Assess every source dataset."""
+    sources: dict[str, pd.DataFrame],
+) -> dict[str, DataQualityResult]:
+    """
+    Assess every source dataset.
 
-    return [
-        assess_dataframe_quality(
-            name,
-            dataframe,
+    Parameters
+    ----------
+    sources:
+        Mapping from logical source name to DataFrame.
+
+    Returns
+    -------
+    dict[str, DataQualityResult]
+        Quality results keyed by source name.
+    """
+
+    results: dict[str, DataQualityResult] = {}
+
+    for name, dataframe in sources.items():
+        results[name] = assess_dataframe_quality(
+            name=name,
+            dataframe=dataframe,
         )
-        for name, dataframe in data.items()
-    ]
+
+    return results
