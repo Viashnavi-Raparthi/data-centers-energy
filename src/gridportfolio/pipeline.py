@@ -57,27 +57,55 @@ from gridportfolio.governance.evaluation import (
 def run_demo() -> dict:
     """Run the complete portfolio integration demo."""
 
+    # ---------------------------------------------------------------
+    # 1. Generate fragmented enterprise source systems
+    # ---------------------------------------------------------------
+
     sources = generate_all_sources()
+
+    # ---------------------------------------------------------------
+    # 2. Integrate source systems
+    # ---------------------------------------------------------------
 
     integrated = integrate_sources(
         sources,
     )
 
+    # ---------------------------------------------------------------
+    # 3. Build canonical cross-functional portfolio view
+    # ---------------------------------------------------------------
+
     cross_functional = build_cross_functional_view(
         integrated,
     )
+
+    # ---------------------------------------------------------------
+    # 4. Build portfolio metrics
+    # ---------------------------------------------------------------
 
     metrics = build_metric_table(
         cross_functional,
     )
 
+    # ---------------------------------------------------------------
+    # 5. Calculate portfolio health
+    # ---------------------------------------------------------------
+
     health = calculate_portfolio_health(
         metrics,
     )
 
+    # ---------------------------------------------------------------
+    # 6. Detect cross-functional signals
+    # ---------------------------------------------------------------
+
     signals = detect_cross_functional_signals(
         cross_functional,
     )
+
+    # ---------------------------------------------------------------
+    # 7. Run the decision-support agent
+    # ---------------------------------------------------------------
 
     orchestrator = PortfolioAgentOrchestrator()
 
@@ -86,6 +114,10 @@ def run_demo() -> dict:
         initiatives=integrated.initiatives,
         health=health,
     )
+
+    # ---------------------------------------------------------------
+    # 8. Evaluate generated AI outputs
+    # ---------------------------------------------------------------
 
     signal_evaluations = [
         evaluate_signal(signal)
@@ -96,17 +128,25 @@ def run_demo() -> dict:
         agent_results["brief"],
     )
 
+    # ---------------------------------------------------------------
+    # 9. Return complete demonstration result
+    # ---------------------------------------------------------------
+
     return {
         "source_systems": list(
             sources.keys(),
         ),
         "data_quality": [
             {
-                "dataset": quality_result.dataset,
-                "score": quality_result.score,
-                "status": quality_result.status,
+                "dataset": quality_result.source_name,
+                "score": quality_result.quality_score,
+                "status": (
+                    "healthy"
+                    if quality_result.is_healthy
+                    else "needs_attention"
+                ),
             }
-            for quality_result in integrated.quality.values()
+            for quality_result in integrated.quality
         ],
         "portfolio_health": {
             "overall": health.overall_score,
@@ -187,7 +227,20 @@ def main() -> None:
         f"{health['forecast_stability']:.1f}"
     )
 
+    print(
+        f"  Renewable Coverage: "
+        f"{health['renewable_coverage']:.1f}"
+    )
+
+    print(
+        f"  Execution Health: "
+        f"{health['execution_health']:.1f}"
+    )
+
     print("\nCROSS-TEAM SIGNALS")
+
+    if not result["signals"]:
+        print("  No cross-functional signals detected.")
 
     for signal in result["signals"]:
         print(
@@ -223,12 +276,45 @@ def main() -> None:
         f"{brief['portfolio_health']:.1f}/100"
     )
 
+    print("\n  What Changed:")
+
+    if brief["what_changed"]:
+        for change in brief["what_changed"]:
+            print(
+                f"    • {change}"
+            )
+    else:
+        print("    • None identified.")
+
+    print("\n  Top Risks:")
+
+    if brief["top_risks"]:
+        for risk in brief["top_risks"]:
+            print(
+                f"    • {risk}"
+            )
+    else:
+        print("    • None identified.")
+
+    print("\n  Cross-Team Impacts:")
+
+    if brief["cross_team_impacts"]:
+        for impact in brief["cross_team_impacts"]:
+            print(
+                f"    • {impact}"
+            )
+    else:
+        print("    • None identified.")
+
     print("\n  Decisions Needed:")
 
-    for decision in brief["decisions_needed"]:
-        print(
-            f"    • {decision}"
-        )
+    if brief["decisions_needed"]:
+        for decision in brief["decisions_needed"]:
+            print(
+                f"    • {decision}"
+            )
+    else:
+        print("    • None identified.")
 
     print("\n  Recommended Actions:")
 
@@ -236,6 +322,16 @@ def main() -> None:
         print(
             f"    • {action}"
         )
+
+    print(
+        "\n  Human Review Required: "
+        f"{brief['human_review_required']}"
+    )
+
+    print(
+        "  Approved: "
+        f"{brief['approved']}"
+    )
 
     print("\nAI EVALUATION")
 

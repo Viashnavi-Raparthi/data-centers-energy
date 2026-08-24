@@ -1,22 +1,12 @@
 """
-Integration pipeline.
+Integration layer for GridPortfolio.
 
-Connects fragmented source systems into a common portfolio context.
+Combines fragmented source systems into a canonical,
+cross-functional portfolio view.
 
-The integration layer preserves specialist ownership while creating
-relationships across:
-
-    Asset Management
-          ↕
-    Data & Analytics
-          ↕
-    Wholesale
-          ↕
-    Origination
-          ↕
-    Procurement
-          ↕
-    Initiatives
+The integration layer preserves the fields needed by downstream
+portfolio metrics, signal detection, risk analysis, and the
+executive decision layer.
 """
 
 from __future__ import annotations
@@ -25,6 +15,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from gridportfolio.data.generators import generate_all_sources
 from gridportfolio.integration.quality import (
     DataQualityResult,
     assess_all_sources,
@@ -33,7 +24,7 @@ from gridportfolio.integration.quality import (
 
 @dataclass
 class IntegratedPortfolio:
-    """Integrated representation of the portfolio."""
+    """Container for integrated source-system data."""
 
     assets: pd.DataFrame
     forecasts: pd.DataFrame
@@ -41,33 +32,19 @@ class IntegratedPortfolio:
     contracts: pd.DataFrame
     procurement: pd.DataFrame
     initiatives: pd.DataFrame
-    quality: dict[str, DataQualityResult]
+    quality: list[DataQualityResult]
 
 
 def integrate_sources(
     sources: dict[str, pd.DataFrame],
 ) -> IntegratedPortfolio:
     """
-    Integrate specialist datasets into a common portfolio structure.
+    Integrate fragmented source systems into a common portfolio object.
     """
 
-    required = {
-        "asset_management",
-        "analytics",
-        "wholesale",
-        "origination",
-        "procurement",
-        "initiatives",
-    }
+    quality_results = assess_all_sources(sources)
 
-    missing = required - set(sources)
-
-    if missing:
-        raise ValueError(
-            f"Missing required source datasets: {sorted(missing)}"
-        )
-
-    quality = assess_all_sources(sources)
+    quality = list(quality_results.values())
 
     return IntegratedPortfolio(
         assets=sources["asset_management"].copy(),
@@ -80,47 +57,279 @@ def integrate_sources(
     )
 
 
+def _aggregate_contracts(
+    contracts: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Aggregate contract-level information to the asset level.
+
+    The source Origination data identifies renewable contracts using
+    ``contract_type`` rather than a boolean ``renewable_contract`` field.
+
+    This function derives the renewable-contract indicator while
+    preserving the earliest expiration date for downstream
+    contract-expiration risk calculations.
+    """
+
+    if contracts.empty:
+        return pd.DataFrame()
+
+    required = {
+        "asset_code",
+        "contract_code",
+        "contracted_mw",
+        "contract_price_usd_mwh",
+        "contract_type",
+        "expiration_date",
+    }
+
+    missing = required - set(contracts.columns)
+
+    if missing:
+        raise ValueError(
+            "Origination contract data is missing required columns: "
+            f"{sorted(missing)}"
+        )
+
+    contracts = contracts.copy()
+
+    contracts["expiration_date"] = pd.to_datetime(
+        contracts["expiration_date"],
+        errors="coerce",
+    )
+
+    # ---------------------------------------------------------------
+    # Derive renewable-contract flag from the source contract type.
+    #
+    # PPA and VPPA are treated as renewable contracts for this
+    # demonstration. This keeps the integration layer aligned with
+    # the actual generated Origination schema.
+    # ---------------------------------------------------------------
+
+    contracts["renewable_contract"] = (
+        contracts["contract_type"]
+        .astype(str)
+        .str.upper()
+        .isin({"PPA", "VPPA"})
+    )
+
+    contract_summary = (
+        contracts
+        .groupby("asset_code", as_index=False)
+        .agg(
+            contract_count=(
+                "contract_code",
+                "nunique",
+            ),
+            contracted_mw=(
+                "contracted_mw",
+                "sum",
+            ),
+            average_contract_price_usd_mwh=(
+                "contract_price_usd_mwh",
+                "mean",
+            ),
+            renewable_contract_count=(
+                "renewable_contract",
+                "sum",
+            ),
+            earliest_contract_expiration_date=(
+                "expiration_date",
+                "min",
+            ),
+        )
+    )
+
+    return contract_summary
+
+
+def _aggregate_procurement(
+    procurement: pd.DataFrame,
+) -> pd.DataFrame:
+    """Aggregate procurement information to the asset level."""
+
+    if procurement.empty:
+        return pd.DataFrame()
+
+    required = {
+        "asset_code",
+        "procurement_opportunity_count",
+        "procurement_required_mw",
+        "procurement_estimated_value_usd",
+        "procurement_blocker_count",
+        "procurement_active_count",
+    }
+
+    missing = required - set(procurement.columns)
+
+    if missing:
+        raise ValueError(
+            "Procurement data is missing required columns: "
+            f"{sorted(missing)}"
+        )
+
+    return (
+        procurement
+        .groupby("asset_code", as_index=False)
+        .agg(
+            procurement_opportunity_count=(
+                "procurement_opportunity_count",
+                "sum",
+            ),
+            procurement_required_mw=(
+                "procurement_required_mw",
+                "sum",
+            ),
+            procurement_estimated_value_usd=(
+                "procurement_estimated_value_usd",
+                "sum",
+            ),
+            procurement_blocker_count=(
+                "procurement_blocker_count",
+                "sum",
+            ),
+            procurement_active_count=(
+                "procurement_active_count",
+                "sum",
+            ),
+        )
+    )
+
+
+def _aggregate_initiatives(
+    initiatives: pd.DataFrame,
+) -> pd.DataFrame:
+    """Aggregate initiative information to the asset level."""
+
+    if initiatives.empty:
+        return pd.DataFrame()
+
+    required = {
+        "asset_code",
+        "initiative_count",
+        "initiative_completion_pct",
+        "initiative_dependencies",
+        "initiative_blocker_count",
+        "high_priority_initiative_count",
+    }
+
+    missing = required - set(initiatives.columns)
+
+    if missing:
+        raise ValueError(
+            "Initiative data is missing required columns: "
+            f"{sorted(missing)}"
+        )
+
+    return (
+        initiatives
+        .groupby("asset_code", as_index=False)
+        .agg(
+            initiative_count=(
+                "initiative_count",
+                "sum",
+            ),
+            average_initiative_completion_pct=(
+                "initiative_completion_pct",
+                "mean",
+            ),
+            total_initiative_dependencies=(
+                "initiative_dependencies",
+                "sum",
+            ),
+            initiative_blocker_count=(
+                "initiative_blocker_count",
+                "sum",
+            ),
+            high_priority_initiative_count=(
+                "high_priority_initiative_count",
+                "sum",
+            ),
+        )
+    )
+
+
+def _aggregate_markets(
+    markets: pd.DataFrame,
+) -> pd.DataFrame:
+    """Aggregate market information to the market level."""
+
+    if markets.empty:
+        return pd.DataFrame()
+
+    required = {
+        "market_code",
+        "market_name",
+        "region",
+        "real_time_price_usd_mwh",
+        "day_ahead_price_usd_mwh",
+        "price_volatility",
+    }
+
+    missing = required - set(markets.columns)
+
+    if missing:
+        raise ValueError(
+            "Wholesale market data is missing required columns: "
+            f"{sorted(missing)}"
+        )
+
+    return (
+        markets
+        .groupby("market_code", as_index=False)
+        .agg(
+            market_name=(
+                "market_name",
+                "first",
+            ),
+            region_market=(
+                "region",
+                "first",
+            ),
+            real_time_price_usd_mwh=(
+                "real_time_price_usd_mwh",
+                "mean",
+            ),
+            day_ahead_price_usd_mwh=(
+                "day_ahead_price_usd_mwh",
+                "mean",
+            ),
+            price_volatility=(
+                "price_volatility",
+                "mean",
+            ),
+        )
+    )
+
+
 def build_cross_functional_view(
     portfolio: IntegratedPortfolio,
 ) -> pd.DataFrame:
     """
-    Build a single cross-functional portfolio view.
+    Build one canonical asset-level DataFrame.
 
-    The output combines asset, forecast, market, contract,
-    procurement, and initiative context.
+    The resulting table combines:
+
+    - asset management
+    - analytics / forecasting
+    - wholesale markets
+    - origination / contracts
+    - procurement
+    - initiatives
     """
 
-    # ============================================================
-    # 1. Latest asset observation
-    # ============================================================
-
     assets = portfolio.assets.copy()
-
-    if "observation_time" in assets.columns:
-        assets = (
-            assets
-            .sort_values("observation_time")
-            .groupby("asset_code", as_index=False)
-            .tail(1)
-        )
-
-    # ============================================================
-    # 2. Latest forecast for each asset
-    # ============================================================
-
     forecasts = portfolio.forecasts.copy()
+    markets = portfolio.markets.copy()
 
-    if "forecast_date" in forecasts.columns:
-        forecasts = (
-            forecasts
-            .sort_values("forecast_date")
-            .groupby("asset_code", as_index=False)
-            .tail(1)
-        )
+    result = assets.copy()
 
-    forecast_columns = [
-        column
-        for column in [
+    # ---------------------------------------------------------------
+    # 1. Forecast context
+    # ---------------------------------------------------------------
+
+    if not forecasts.empty:
+        forecast_columns = [
             "asset_code",
             "predicted_load_mw",
             "forecast_lower_mw",
@@ -130,194 +339,139 @@ def build_cross_functional_view(
             "model_name",
             "model_version",
         ]
-        if column in forecasts.columns
-    ]
 
-    view = assets.merge(
-        forecasts[forecast_columns],
-        on="asset_code",
-        how="left",
-    )
+        available = [
+            column
+            for column in forecast_columns
+            if column in forecasts.columns
+        ]
 
-    # ============================================================
-    # 3. Map assets to markets
-    # ============================================================
-
-    asset_market = {
-        "DC-001": "WEST",
-        "DC-002": "EAST",
-        "DC-003": "CENTRAL",
-        "DC-004": "WEST",
-        "DC-005": "EAST",
-    }
-
-    view["market_code"] = (
-        view["asset_code"]
-        .map(asset_market)
-    )
-
-    # ============================================================
-    # 4. Latest wholesale observation by market
-    # ============================================================
-
-    markets = portfolio.markets.copy()
-
-    if "observation_time" in markets.columns:
-        markets = (
-            markets
-            .sort_values("observation_time")
-            .groupby("market_code", as_index=False)
-            .tail(1)
+        result = result.merge(
+            forecasts[available],
+            on="asset_code",
+            how="left",
         )
 
-    market_columns = [
-        column
-        for column in [
-            "market_code",
-            "market_name",
-            "region",
-            "real_time_price_usd_mwh",
-            "day_ahead_price_usd_mwh",
-            "price_volatility",
-            "exposure_mw",
-        ]
-        if column in markets.columns
-    ]
+    # ---------------------------------------------------------------
+    # 2. Market context
+    # ---------------------------------------------------------------
 
-    view = view.merge(
-        markets[market_columns],
-        on="market_code",
-        how="left",
-        suffixes=("", "_market"),
-    )
+    if not markets.empty and "market_code" in result.columns:
+        market_summary = _aggregate_markets(markets)
 
-    # ============================================================
-    # 5. Contract context
-    # ============================================================
+        result = result.merge(
+            market_summary,
+            on="market_code",
+            how="left",
+        )
+
+    # ---------------------------------------------------------------
+    # 3. Contract context
+    # ---------------------------------------------------------------
 
     contracts = portfolio.contracts.copy()
 
     if not contracts.empty and "asset_code" in contracts.columns:
-
-        contract_summary = (
+        contract_summary = _aggregate_contracts(
             contracts
-            .groupby("asset_code")
-            .agg(
-                contract_count=(
-                    "contract_code",
-                    "count",
-                ),
-                contracted_mw=(
-                    "contracted_mw",
-                    "sum",
-                ),
-                average_contract_price_usd_mwh=(
-                    "contract_price_usd_mwh",
-                    "mean",
-                ),
-                renewable_contract_count=(
-                    "renewable_flag",
-                    "sum",
-                ),
-            )
-            .reset_index()
         )
 
-        view = view.merge(
+        result = result.merge(
             contract_summary,
             on="asset_code",
             how="left",
         )
 
-    # ============================================================
-    # 6. Procurement context
-    # ============================================================
-    #
-    # Procurement opportunities are portfolio-level rather than
-    # asset-level in the current demo schema.
-    #
-    # Therefore preserve them as portfolio-level context rather
-    # than forcing an incorrect asset join.
-    # ============================================================
+    # ---------------------------------------------------------------
+    # 4. Procurement context
+    # ---------------------------------------------------------------
 
     procurement = portfolio.procurement.copy()
 
-    if not procurement.empty:
+    if not procurement.empty and "asset_code" in procurement.columns:
+        procurement_summary = _aggregate_procurement(
+            procurement
+        )
 
-        procurement_summary: dict[str, object] = {
-            "procurement_opportunity_count": len(procurement),
-        }
+        result = result.merge(
+            procurement_summary,
+            on="asset_code",
+            how="left",
+        )
 
-        if "required_mw" in procurement.columns:
-            procurement_summary["procurement_required_mw"] = (
-                procurement["required_mw"].sum()
-            )
-
-        if "estimated_value_usd" in procurement.columns:
-            procurement_summary["procurement_estimated_value_usd"] = (
-                procurement["estimated_value_usd"].sum()
-            )
-
-        if "blocker" in procurement.columns:
-            procurement_summary["procurement_blocker_count"] = int(
-                procurement["blocker"]
-                .notna()
-                .sum()
-            )
-
-        if "procurement_stage" in procurement.columns:
-            procurement_summary["procurement_active_count"] = int(
-                procurement["procurement_stage"]
-                .notna()
-                .sum()
-            )
-
-        for column, value in procurement_summary.items():
-            view[column] = value
-
-    # ============================================================
-    # 7. Initiative context
-    # ============================================================
+    # ---------------------------------------------------------------
+    # 5. Initiative context
+    # ---------------------------------------------------------------
 
     initiatives = portfolio.initiatives.copy()
 
-    if not initiatives.empty:
+    if not initiatives.empty and "asset_code" in initiatives.columns:
+        initiative_summary = _aggregate_initiatives(
+            initiatives
+        )
 
-        initiative_summary: dict[str, object] = {
-            "initiative_count": len(initiatives),
-        }
+        result = result.merge(
+            initiative_summary,
+            on="asset_code",
+            how="left",
+        )
 
-        if "completion_pct" in initiatives.columns:
-            initiative_summary[
-                "average_initiative_completion_pct"
-            ] = initiatives["completion_pct"].mean()
+    # ---------------------------------------------------------------
+    # 6. Normalize missing values
+    # ---------------------------------------------------------------
 
-        if "dependency_count" in initiatives.columns:
-            initiative_summary[
-                "total_initiative_dependencies"
-            ] = initiatives["dependency_count"].sum()
+    numeric_defaults = {
+        "predicted_load_mw": 0.0,
+        "forecast_lower_mw": 0.0,
+        "forecast_upper_mw": 0.0,
+        "forecast_error_pct": 0.0,
+        "confidence": 0.0,
+        "contract_count": 0.0,
+        "contracted_mw": 0.0,
+        "average_contract_price_usd_mwh": 0.0,
+        "renewable_contract_count": 0.0,
+        "procurement_opportunity_count": 0.0,
+        "procurement_required_mw": 0.0,
+        "procurement_estimated_value_usd": 0.0,
+        "procurement_blocker_count": 0.0,
+        "procurement_active_count": 0.0,
+        "initiative_count": 0.0,
+        "average_initiative_completion_pct": 0.0,
+        "total_initiative_dependencies": 0.0,
+        "initiative_blocker_count": 0.0,
+        "high_priority_initiative_count": 0.0,
+    }
 
-        if "blocker" in initiatives.columns:
-            initiative_summary[
-                "initiative_blocker_count"
-            ] = int(
-                initiatives["blocker"]
-                .notna()
-                .sum()
+    for column, default in numeric_defaults.items():
+        if column in result.columns:
+            result[column] = result[column].fillna(
+                default
             )
 
-        if "priority" in initiatives.columns:
-            initiative_summary[
-                "high_priority_initiative_count"
-            ] = int(
-                initiatives["priority"]
-                .astype(str)
-                .str.lower()
-                .isin(["high", "critical"])
-                .sum()
-            )
+    # ---------------------------------------------------------------
+    # 7. Preserve datetime semantics for downstream risk metrics.
+    #
+    # Do NOT replace expiration dates with zero/NaN numeric defaults.
+    # Missing expiration dates remain NaT and are handled by the
+    # contract-risk function.
+    # ---------------------------------------------------------------
 
-        for column, value in initiative_summary.items():
-            view[column] = value
+    if "earliest_contract_expiration_date" in result.columns:
+        result["earliest_contract_expiration_date"] = pd.to_datetime(
+            result["earliest_contract_expiration_date"],
+            errors="coerce",
+        )
 
-    return view
+    return result
+
+
+def generate_integrated_portfolio() -> IntegratedPortfolio:
+    """
+    Convenience function for generating and integrating demo data.
+    """
+
+    sources = generate_all_sources()
+
+    return integrate_sources(
+        sources
+    )

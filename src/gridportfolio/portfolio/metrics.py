@@ -1,167 +1,143 @@
 """
-Portfolio metrics.
+Canonical portfolio metrics.
 
-Provides normalized metrics used by the portfolio, signal, agent,
-and governance layers.
+This module converts the integrated cross-functional portfolio view
+into a stable metric table consumed by:
+
+    - portfolio health
+    - signal detection
+    - risk identification
+    - executive agents
+
+The key design principle is that downstream layers should depend on
+these canonical metric names rather than raw source-system fields.
 """
 
 from __future__ import annotations
 
+from typing import Iterable
+
+import numpy as np
 import pandas as pd
 
 
 def _first_existing(
     dataframe: pd.DataFrame,
-    columns: list[str],
-    default: object = None,
+    columns: Iterable[str],
 ) -> pd.Series:
-    """Return the first existing column, or a default Series."""
+    """Return the first available column, or an all-NaN series."""
+
     for column in columns:
         if column in dataframe.columns:
             return dataframe[column]
 
     return pd.Series(
-        [default] * len(dataframe),
+        np.nan,
         index=dataframe.index,
+        dtype=float,
     )
 
 
 def _numeric(
     series: pd.Series,
-    default: float = 0.0,
 ) -> pd.Series:
-    """Safely convert a Series to numeric."""
+    """Convert a series to numeric values safely."""
+
     return pd.to_numeric(
         series,
         errors="coerce",
-    ).fillna(default)
+    )
+
+
+def _fill_zero(
+    series: pd.Series,
+) -> pd.Series:
+    """Convert numeric values and replace missing values with zero."""
+
+    return _numeric(series).fillna(0.0)
 
 
 def forecast_uncertainty(
     dataframe: pd.DataFrame,
 ) -> pd.Series:
     """
-    Estimate forecast uncertainty.
+    Calculate normalized forecast uncertainty.
 
-    Returns a value from 0 to 1.
-    Higher values indicate greater uncertainty.
+    Preferred source:
+        forecast_upper_mw - forecast_lower_mw
+
+    The range is normalized against forecast load so that uncertainty
+    is comparable across data centers of different sizes.
     """
-    confidence = _numeric(
+
+    upper = _numeric(
         _first_existing(
             dataframe,
-            ["confidence"],
+            [
+                "forecast_upper_mw",
+                "upper_forecast_mw",
+            ],
         )
     )
 
-    error = _numeric(
+    lower = _numeric(
         _first_existing(
             dataframe,
-            ["forecast_error_pct"],
+            [
+                "forecast_lower_mw",
+                "lower_forecast_mw",
+            ],
         )
-    ).abs()
+    )
 
-    confidence_normalized = confidence.clip(
+    forecast = _numeric(
+        _first_existing(
+            dataframe,
+            [
+                "forecast_load_mw",
+                "predicted_load_mw",
+            ],
+        )
+    )
+
+    denominator = forecast.abs().replace(
+        0,
+        np.nan,
+    )
+
+    uncertainty = (
+        (upper - lower)
+        .abs()
+        .div(denominator)
+    )
+
+    return uncertainty.fillna(0.0).clip(
         lower=0.0,
         upper=1.0,
     )
-
-    error_normalized = (
-        error
-        .div(100.0)
-        .clip(
-            lower=0.0,
-            upper=1.0,
-        )
-    )
-
-    return (
-        (1.0 - confidence_normalized) * 0.50
-        + error_normalized * 0.50
-    ).clip(
-        lower=0.0,
-        upper=1.0,
-    )
-
-
-def contract_expiration_risk(
-    dataframe: pd.DataFrame,
-) -> pd.Series:
-    """
-    Calculate contract expiration risk.
-
-    Higher values indicate contracts that are closer to expiration.
-    """
-    if dataframe.empty:
-        return pd.Series(
-            dtype=float,
-            index=dataframe.index,
-        )
-
-    expiration = pd.to_datetime(
-        _first_existing(
-            dataframe,
-            ["expiration_date"],
-        ),
-        errors="coerce",
-    )
-
-    today = pd.Timestamp.today().normalize()
-
-    days_remaining = (
-        expiration - today
-    ).dt.days
-
-    risk = pd.Series(
-        0.0,
-        index=dataframe.index,
-        dtype=float,
-    )
-
-    valid = days_remaining.notna()
-
-    risk.loc[
-        valid & (days_remaining <= 0)
-    ] = 1.0
-
-    risk.loc[
-        valid
-        & (days_remaining > 0)
-        & (days_remaining <= 30)
-    ] = 0.9
-
-    risk.loc[
-        valid
-        & (days_remaining > 30)
-        & (days_remaining <= 90)
-    ] = 0.7
-
-    risk.loc[
-        valid
-        & (days_remaining > 90)
-        & (days_remaining <= 180)
-    ] = 0.4
-
-    risk.loc[
-        valid & (days_remaining > 180)
-    ] = 0.1
-
-    return risk
 
 
 def forecast_error_risk(
     dataframe: pd.DataFrame,
 ) -> pd.Series:
-    """Normalize forecast error into a 0-1 risk score."""
+    """Calculate normalized forecast-error risk."""
+
     error = _numeric(
         _first_existing(
             dataframe,
-            ["forecast_error_pct"],
+            [
+                "forecast_error_pct",
+                "forecast_error",
+            ],
         )
     ).abs()
 
+    # Forecast error is expressed as a percentage.
+    # 25% error or higher is treated as maximum risk.
     return (
         error
-        .div(100.0)
+        .div(25.0)
+        .fillna(0.0)
         .clip(
             lower=0.0,
             upper=1.0,
@@ -172,24 +148,27 @@ def forecast_error_risk(
 def market_volatility_risk(
     dataframe: pd.DataFrame,
 ) -> pd.Series:
-    """Normalize market volatility into a 0-1 risk score."""
+    """
+    Calculate normalized market-volatility risk.
+
+    Synthetic data in this project represents volatility on a
+    0-to-1 scale, so 0.38 means 38% volatility.
+    """
+
     volatility = _numeric(
         _first_existing(
             dataframe,
             [
                 "price_volatility",
+                "market_volatility",
                 "volatility",
             ],
         )
     ).abs()
 
-    return (
-        volatility
-        .div(100.0)
-        .clip(
-            lower=0.0,
-            upper=1.0,
-        )
+    return volatility.fillna(0.0).clip(
+        lower=0.0,
+        upper=1.0,
     )
 
 
@@ -197,43 +176,101 @@ def market_risk(
     dataframe: pd.DataFrame,
 ) -> pd.Series:
     """
-    Backward-compatible market risk metric.
+    Calculate canonical market risk.
 
-    Market risk is represented by normalized price volatility.
+    For now, market risk is represented by market volatility.
+    This intentionally provides a stable downstream interface that
+    can later incorporate price exposure, basis risk, or market
+    concentration.
     """
-    return market_volatility_risk(dataframe)
+
+    volatility_risk = market_volatility_risk(
+        dataframe,
+    )
+
+    return volatility_risk.clip(
+        lower=0.0,
+        upper=1.0,
+    )
+
+
+def contract_expiration_risk(
+    dataframe: pd.DataFrame,
+) -> pd.Series:
+    """
+    Calculate contract-expiration risk.
+
+    Risk increases as the number of days remaining decreases:
+
+        <= 30 days   -> 1.00
+        60 days      -> 0.75
+        90 days      -> 0.50
+        180 days     -> 0.00
+
+    Missing expiration information produces zero risk rather than
+    fabricating a date.
+    """
+
+    days = _numeric(
+        _first_existing(
+            dataframe,
+            [
+                "days_to_contract_expiration",
+                "contract_days_remaining",
+            ],
+        )
+    )
+
+    risk = (
+        (180.0 - days)
+        .div(150.0)
+    )
+
+    return risk.fillna(0.0).clip(
+        lower=0.0,
+        upper=1.0,
+    )
 
 
 def contract_coverage(
     dataframe: pd.DataFrame,
 ) -> pd.Series:
     """
-    Calculate contracted capacity as a 0-1 coverage ratio.
+    Calculate contract coverage as contracted MW / current load MW.
     """
+
     contracted = _numeric(
         _first_existing(
             dataframe,
-            ["contracted_mw"],
+            [
+                "contracted_mw",
+                "contracted_capacity_mw",
+            ],
         )
     )
 
-    capacity = _numeric(
+    load = _numeric(
         _first_existing(
             dataframe,
-            ["installed_capacity_mw"],
+            [
+                "current_load_mw",
+                "load_mw",
+            ],
         )
     )
 
-    return (
-        contracted
-        .div(
-            capacity.replace(0, pd.NA)
-        )
-        .fillna(0.0)
-        .clip(
-            lower=0.0,
-            upper=1.0,
-        )
+    denominator = load.replace(
+        0,
+        np.nan,
+    )
+
+    coverage = contracted.div(
+        denominator,
+    )
+
+    return coverage.fillna(0.0).clip(
+        lower=0.0,
+        upper=1.0,
     )
 
 
@@ -243,67 +280,45 @@ def renewable_coverage(
     """
     Calculate renewable contract coverage.
 
-    If renewable capacity is explicitly available, use it.
-    Otherwise use contracted capacity for rows marked renewable.
+    Renewable contracted MW is estimated from the proportion of
+    renewable contracts when detailed renewable MW is unavailable.
     """
-    capacity = _numeric(
-        _first_existing(
-            dataframe,
-            ["installed_capacity_mw"],
-        )
-    )
-
-    renewable_capacity = _numeric(
-        _first_existing(
-            dataframe,
-            [
-                "renewable_capacity_mw",
-                "renewable_contracted_mw",
-            ],
-        )
-    )
-
-    renewable_flag = _first_existing(
-        dataframe,
-        ["renewable_flag"],
-        False,
-    )
-
-    renewable_flag = (
-        renewable_flag
-        .astype(str)
-        .str.lower()
-        .isin(
-            [
-                "true",
-                "1",
-                "yes",
-                "y",
-            ]
-        )
-    )
 
     contracted = _numeric(
         _first_existing(
             dataframe,
-            ["contracted_mw"],
+            [
+                "contracted_mw",
+                "contracted_capacity_mw",
+            ],
         )
-    )
+    ).fillna(0.0)
 
-    fallback_renewable = contracted.where(
-        renewable_flag,
-        0.0,
-    )
+    renewable_count = _numeric(
+        _first_existing(
+            dataframe,
+            [
+                "renewable_contract_count",
+            ],
+        )
+    ).fillna(0.0)
 
-    renewable_capacity = renewable_capacity.where(
-        renewable_capacity.ne(0),
-        fallback_renewable,
-    )
+    contract_count = _numeric(
+        _first_existing(
+            dataframe,
+            [
+                "contract_count",
+            ],
+        )
+    ).fillna(0.0)
 
-    return (
-        renewable_capacity
+    renewable_ratio = (
+        renewable_count
         .div(
-            capacity.replace(0, pd.NA)
+            contract_count.replace(
+                0,
+                np.nan,
+            )
         )
         .fillna(0.0)
         .clip(
@@ -312,265 +327,55 @@ def renewable_coverage(
         )
     )
 
+    renewable_mw = (
+        contracted * renewable_ratio
+    )
+
+    load = _numeric(
+        _first_existing(
+            dataframe,
+            [
+                "current_load_mw",
+                "load_mw",
+            ],
+        )
+    )
+
+    coverage = renewable_mw.div(
+        load.replace(
+            0,
+            np.nan,
+        )
+    )
+
+    return coverage.fillna(0.0).clip(
+        lower=0.0,
+        upper=1.0,
+    )
+
 
 def build_metric_table(
-    cross_functional: pd.DataFrame,
+    dataframe: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Build the normalized portfolio metric table.
+    Build the canonical portfolio metric table.
 
-    This function intentionally creates both the newer metric names
-    and backward-compatible aliases expected by downstream modules.
+    All downstream consumers should use the columns generated here.
     """
-    result = cross_functional.copy()
+
+    result = dataframe.copy()
 
     # ---------------------------------------------------------------
-    # Identity
+    # Canonical risk metrics
     # ---------------------------------------------------------------
 
-    result["asset_code"] = _first_existing(
-        result,
-        ["asset_code"],
+    result["forecast_uncertainty"] = (
+        forecast_uncertainty(result)
     )
 
-    result["asset_name"] = _first_existing(
-        result,
-        ["asset_name"],
+    result["forecast_error_risk"] = (
+        forecast_error_risk(result)
     )
-
-    result["region"] = _first_existing(
-        result,
-        ["region"],
-    )
-
-    # ---------------------------------------------------------------
-    # Load / capacity
-    # ---------------------------------------------------------------
-
-    result["installed_capacity_mw"] = _numeric(
-        _first_existing(
-            result,
-            ["installed_capacity_mw"],
-        )
-    )
-
-    result["current_load_mw"] = _numeric(
-        _first_existing(
-            result,
-            ["current_load_mw"],
-        )
-    )
-
-    result["forecast_load_mw"] = _numeric(
-        _first_existing(
-            result,
-            [
-                "forecast_load_mw",
-                "predicted_load_mw",
-            ],
-        )
-    )
-
-    result["predicted_load_mw"] = _numeric(
-        _first_existing(
-            result,
-            [
-                "predicted_load_mw",
-                "forecast_load_mw",
-            ],
-        )
-    )
-
-    # ---------------------------------------------------------------
-    # Forecast
-    # ---------------------------------------------------------------
-
-    result["forecast_error_pct"] = _numeric(
-        _first_existing(
-            result,
-            ["forecast_error_pct"],
-        )
-    )
-
-    result["confidence"] = _numeric(
-        _first_existing(
-            result,
-            ["confidence"],
-        )
-    )
-
-    # ---------------------------------------------------------------
-    # Wholesale / market
-    # ---------------------------------------------------------------
-
-    result["real_time_price_usd_mwh"] = _numeric(
-        _first_existing(
-            result,
-            [
-                "real_time_price_usd_mwh",
-                "price_mwh",
-            ],
-        )
-    )
-
-    result["day_ahead_price_usd_mwh"] = _numeric(
-        _first_existing(
-            result,
-            ["day_ahead_price_usd_mwh"],
-        )
-    )
-
-    result["price_volatility"] = _numeric(
-        _first_existing(
-            result,
-            [
-                "price_volatility",
-                "volatility",
-            ],
-        )
-    )
-
-    # Backward-compatible aliases.
-    result["price_mwh"] = result[
-        "real_time_price_usd_mwh"
-    ]
-
-    result["volatility"] = result[
-        "price_volatility"
-    ]
-
-    result["exposure_mw"] = _numeric(
-        _first_existing(
-            result,
-            ["exposure_mw"],
-        )
-    )
-
-    # ---------------------------------------------------------------
-    # Contracts
-    # ---------------------------------------------------------------
-
-    result["contract_code"] = _first_existing(
-        result,
-        ["contract_code"],
-    )
-
-    result["contract_type"] = _first_existing(
-        result,
-        ["contract_type"],
-    )
-
-    result["contracted_mw"] = _numeric(
-        _first_existing(
-            result,
-            ["contracted_mw"],
-        )
-    )
-
-    result["contract_price_usd_mwh"] = _numeric(
-        _first_existing(
-            result,
-            ["contract_price_usd_mwh"],
-        )
-    )
-
-    result["renewable_flag"] = _first_existing(
-        result,
-        ["renewable_flag"],
-        False,
-    )
-
-    result["start_date"] = _first_existing(
-        result,
-        ["start_date"],
-    )
-
-    result["expiration_date"] = _first_existing(
-        result,
-        ["expiration_date"],
-    )
-
-    result["contract_status"] = _first_existing(
-        result,
-        ["contract_status"],
-    )
-
-    # ---------------------------------------------------------------
-    # Procurement
-    # ---------------------------------------------------------------
-
-    result["opportunity_code"] = _first_existing(
-        result,
-        ["opportunity_code"],
-    )
-
-    result["required_mw"] = _numeric(
-        _first_existing(
-            result,
-            ["required_mw"],
-        )
-    )
-
-    result["procurement_stage"] = _first_existing(
-        result,
-        ["procurement_stage"],
-    )
-
-    result["expected_price_usd_mwh"] = _numeric(
-        _first_existing(
-            result,
-            ["expected_price_usd_mwh"],
-        )
-    )
-
-    result["estimated_value_usd"] = _numeric(
-        _first_existing(
-            result,
-            ["estimated_value_usd"],
-        )
-    )
-
-    result["procurement_blocker"] = _first_existing(
-        result,
-        ["blocker"],
-    )
-
-    # ---------------------------------------------------------------
-    # Derived utilization
-    # ---------------------------------------------------------------
-
-    capacity = result["installed_capacity_mw"]
-
-    result["current_utilization_pct"] = (
-        result["current_load_mw"]
-        .div(
-            capacity.replace(0, pd.NA)
-        )
-        .fillna(0.0)
-        * 100.0
-    )
-
-    result["forecast_utilization_pct"] = (
-        result["predicted_load_mw"]
-        .div(
-            capacity.replace(0, pd.NA)
-        )
-        .fillna(0.0)
-        * 100.0
-    )
-
-    result["contract_coverage_pct"] = (
-        result["contracted_mw"]
-        .div(
-            capacity.replace(0, pd.NA)
-        )
-        .fillna(0.0)
-        * 100.0
-    )
-
-    # ---------------------------------------------------------------
-    # Risk
-    # ---------------------------------------------------------------
 
     result["market_volatility_risk"] = (
         market_volatility_risk(result)
@@ -578,22 +383,6 @@ def build_metric_table(
 
     result["market_risk"] = (
         market_risk(result)
-    )
-
-    result["market_risk_score"] = (
-        result["market_risk"]
-    )
-
-    result["forecast_error_risk"] = (
-        forecast_error_risk(result)
-    )
-
-    result["forecast_risk_score"] = (
-        result["forecast_error_risk"]
-    )
-
-    result["forecast_uncertainty"] = (
-        forecast_uncertainty(result)
     )
 
     result["contract_expiration_risk"] = (
@@ -608,12 +397,55 @@ def build_metric_table(
         renewable_coverage(result)
     )
 
-    # Overall risk combines the major risk dimensions.
-    result["overall_risk_score"] = (
-        result["market_risk"] * 0.40
-        + result["forecast_error_risk"] * 0.30
-        + result["contract_expiration_risk"] * 0.20
-        + result["forecast_uncertainty"] * 0.10
+    # ---------------------------------------------------------------
+    # Derived operational fields
+    # ---------------------------------------------------------------
+
+    current_load = _numeric(
+        _first_existing(
+            result,
+            ["current_load_mw"],
+        )
+    )
+
+    forecast_load = _numeric(
+        _first_existing(
+            result,
+            ["forecast_load_mw"],
+        )
+    )
+
+    result["load_growth_pct"] = (
+        forecast_load
+        .sub(current_load)
+        .div(
+            current_load.replace(
+                0,
+                np.nan,
+            )
+        )
+        .mul(100.0)
+        .fillna(0.0)
+    )
+
+    result["load_growth_risk"] = (
+        result["load_growth_pct"]
+        .div(10.0)
+        .clip(
+            lower=0.0,
+            upper=1.0,
+        )
+    )
+
+    # ---------------------------------------------------------------
+    # Combined procurement exposure
+    # ---------------------------------------------------------------
+
+    result["procurement_exposure_risk"] = (
+        result["forecast_uncertainty"] * 0.25
+        + result["market_risk"] * 0.25
+        + result["contract_expiration_risk"] * 0.30
+        + result["load_growth_risk"] * 0.20
     ).clip(
         lower=0.0,
         upper=1.0,
