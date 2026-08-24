@@ -1,16 +1,8 @@
 """
-Portfolio intelligence layer.
+Portfolio layer.
 
-This package provides the analytical and graph-based components used to
-turn specialist data into shared portfolio context.
+Provides portfolio-level metrics, health assessment, and graph utilities.
 """
-
-from gridportfolio.portfolio.graph import (
-    GraphEdge,
-    GraphNode,
-    PortfolioGraph,
-    build_portfolio_graph,
-)
 
 from gridportfolio.portfolio.health import (
     PortfolioHealthResult,
@@ -19,22 +11,24 @@ from gridportfolio.portfolio.health import (
 
 from gridportfolio.portfolio.metrics import (
     build_metric_table,
+    contract_coverage,
     contract_expiration_risk,
+    forecast_error_risk,
     forecast_uncertainty,
     market_risk,
+    market_volatility_risk,
     renewable_coverage,
 )
 
 __all__ = [
-    "GraphEdge",
-    "GraphNode",
-    "PortfolioGraph",
-    "build_portfolio_graph",
     "PortfolioHealthResult",
-    "build_metric_table",
     "calculate_portfolio_health",
-    "contract_expiration_risk",
+    "build_metric_table",
     "forecast_uncertainty",
+    "contract_expiration_risk",
+    "forecast_error_risk",
+    "market_volatility_risk",
     "market_risk",
+    "contract_coverage",
     "renewable_coverage",
 ]

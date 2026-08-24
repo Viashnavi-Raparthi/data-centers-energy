@@ -24,65 +24,48 @@ class DataQualityResult:
     """
 
     source_name: str
-
     row_count: int
-
     column_count: int
-
     missing_rate: float
-
     duplicate_rate: float
-
     quality_score: float
-
     issues: list[str] = field(default_factory=list)
-
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def dataset(self) -> str:
+        """Backward-compatible dataset name used by the pipeline."""
+        return self.source_name
+
+    @property
+    def score(self) -> float:
+        """Backward-compatible quality score used by the pipeline."""
+        return self.quality_score
+
+    @property
+    def status(self) -> str:
+        """
+        Human-readable quality status.
+
+        Healthy >= 0.80
+        Warning >= 0.60
+        Critical < 0.60
+        """
+        if self.quality_score >= 0.80:
+            return "healthy"
+
+        if self.quality_score >= 0.60:
+            return "warning"
+
+        return "critical"
 
     @property
     def is_healthy(self) -> bool:
         """Return whether the dataset passes the basic quality threshold."""
-
         return self.quality_score >= 0.80
 
 
-def _safe_duplicate_rate(
-    dataframe: pd.DataFrame,
-) -> float:
-    """
-    Calculate duplicate-row rate safely.
-
-    Pandas' standard DataFrame.duplicated() requires values to be
-    hashable. Real-world enterprise datasets may contain nested values
-    such as lists, dictionaries, or other Python objects.
-
-    To make quality assessment robust, object values are normalized into
-    deterministic representations before duplicate detection.
-    """
-
-    if dataframe.empty:
-        return 0.0
-
-    normalized = dataframe.copy()
-
-    for column in normalized.columns:
-        if normalized[column].dtype == "object":
-            normalized[column] = normalized[column].map(
-                _normalize_for_hashing
-            )
-
-    try:
-        return float(normalized.duplicated().mean())
-
-    except TypeError:
-        # Final defensive fallback for unusual Python objects.
-        serialized = normalized.astype(str)
-        return float(serialized.duplicated().mean())
-
-
-def _normalize_for_hashing(
-    value: Any,
-) -> Any:
+def _normalize_for_hashing(value: Any) -> Any:
     """
     Convert nested Python objects into hashable deterministic values.
 
@@ -125,6 +108,36 @@ def _normalize_for_hashing(
     return value
 
 
+def _safe_duplicate_rate(
+    dataframe: pd.DataFrame,
+) -> float:
+    """
+    Calculate duplicate-row rate safely.
+
+    Real-world enterprise datasets may contain nested values such as
+    lists, dictionaries, or other Python objects. These are normalized
+    before duplicate detection.
+    """
+
+    if dataframe.empty:
+        return 0.0
+
+    normalized = dataframe.copy()
+
+    for column in normalized.columns:
+        if normalized[column].dtype == "object":
+            normalized[column] = normalized[column].map(
+                _normalize_for_hashing
+            )
+
+    try:
+        return float(normalized.duplicated().mean())
+
+    except TypeError:
+        serialized = normalized.astype(str)
+        return float(serialized.duplicated().mean())
+
+
 def _calculate_missing_rate(
     dataframe: pd.DataFrame,
 ) -> float:
@@ -145,9 +158,8 @@ def _build_quality_score(
     """
     Build a simple interpretable quality score.
 
-    Missingness and duplication are currently the two baseline quality
-    dimensions. Additional checks can be incorporated later without
-    changing the public interface.
+    Missingness contributes 60% of the penalty.
+    Duplication contributes 40% of the penalty.
     """
 
     score = (

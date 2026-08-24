@@ -102,11 +102,11 @@ def run_demo() -> dict:
         ),
         "data_quality": [
             {
-                "dataset": result.dataset,
-                "score": result.score,
-                "status": result.status,
+                "dataset": quality_result.dataset,
+                "score": quality_result.score,
+                "status": quality_result.status,
             }
-            for result in integrated.quality
+            for quality_result in integrated.quality.values()
         ],
         "portfolio_health": {
             "overall": health.overall_score,
@@ -151,10 +151,21 @@ def main() -> None:
     print("=" * 80)
 
     print("\nSOURCE SYSTEMS")
+
     for source in result["source_systems"]:
         print(f"  • {source}")
 
+    print("\nDATA QUALITY")
+
+    for quality in result["data_quality"]:
+        print(
+            f"  {quality['dataset']}: "
+            f"{quality['score']:.1%} "
+            f"({quality['status']})"
+        )
+
     print("\nPORTFOLIO HEALTH")
+
     health = result["portfolio_health"]
 
     print(
